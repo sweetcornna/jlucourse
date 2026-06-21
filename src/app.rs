@@ -925,3 +925,51 @@ pub fn App() -> impl IntoView {
         </div>
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{log_kind, split_tag, status_kind};
+
+    #[test]
+    fn status_kind_maps_login_states() {
+        assert_eq!(status_kind("登录成功！"), "success");
+        assert_eq!(status_kind("获取课程成功"), "success");
+        assert_eq!(status_kind("登录失败：xxx"), "error");
+        // 同时含「获取」与「失败」时，错误优先
+        assert_eq!(status_kind("获取验证码失败"), "error");
+        assert_eq!(status_kind("请输入学号"), "warning");
+        assert_eq!(status_kind("请重新登录"), "warning");
+        assert_eq!(status_kind("请登录"), "warning");
+        assert_eq!(status_kind("正在设置批次..."), "loading");
+        assert_eq!(status_kind("获取课程列表"), "loading");
+        assert_eq!(status_kind(""), "idle");
+    }
+
+    #[test]
+    fn log_kind_maps_course_states() {
+        assert_eq!(log_kind("[高数]选课成功"), "success");
+        assert_eq!(log_kind("[高数]已选"), "success");
+        assert_eq!(log_kind("[高数]等待中"), "wait");
+        assert_eq!(log_kind("[高数]未开始"), "wait");
+        assert_eq!(log_kind("[高数]请求错误"), "error");
+        assert_eq!(log_kind("[高数]已满"), "error");
+        assert_eq!(log_kind("[高数]未登录"), "error");
+        assert_eq!(log_kind("[高数]参数错误"), "error");
+        assert_eq!(log_kind("[高数]失败"), "error");
+        assert_eq!(log_kind("[高数]进行中"), "info");
+    }
+
+    #[test]
+    fn split_tag_separates_bracket_prefix() {
+        assert_eq!(
+            split_tag("[高数]选课成功"),
+            ("[高数]".to_string(), "选课成功".to_string())
+        );
+        assert_eq!(split_tag("[A] msg"), ("[A]".to_string(), "msg".to_string()));
+        assert_eq!(split_tag("[空]"), ("[空]".to_string(), String::new()));
+        assert_eq!(
+            split_tag("no bracket"),
+            (String::new(), "no bracket".to_string())
+        );
+    }
+}
