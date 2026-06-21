@@ -252,15 +252,27 @@ jobs:
             cargo install --version ${{ env.TAURI_CLI_VERSION }} tauri-cli --locked
           fi
 
-      - name: Setup Android signing
+      - name: Setup Android signing (secret or ephemeral)
         run: |
-          mkdir -p ${{ github.workspace }}/android-signing
-          echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > ${{ github.workspace }}/android-signing/app-release.jks
-          cat << EOF > ${{ github.workspace }}/src-tauri/gen/android/local.properties
-          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
-          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          storeFile=${{ github.workspace }}/android-signing/app-release.jks
+          mkdir -p "${{ github.workspace }}/android-signing"
+          KS="${{ github.workspace }}/android-signing/app-release.jks"
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_FILE }}" ]; then
+            echo "Using provided keystore secret"
+            echo "${{ secrets.ANDROID_KEYSTORE_FILE }}" | base64 --decode > "$KS"
+            SP="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"; KP="${{ secrets.ANDROID_KEY_PASSWORD }}"; AL="${{ secrets.ANDROID_KEY_ALIAS }}"
+          else
+            echo "No keystore secret found — generating an ephemeral keystore so the build can sign"
+            SP="funkylesson"; KP="funkylesson"; AL="funkylesson"
+            keytool -genkeypair -v -keystore "$KS" -alias "$AL" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$SP" -keypass "$KP" \
+              -dname "CN=FunkyLesson, O=FunkyLesson, C=CN"
+          fi
+          cat > "${{ github.workspace }}/src-tauri/gen/android/local.properties" <<EOF
+          storePassword=$SP
+          keyPassword=$KP
+          keyAlias=$AL
+          storeFile=$KS
           EOF
 
       # 🔧 添加环境变量验证和构建前检查
@@ -323,7 +335,8 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v') 
+    # always() 让本任务在个别平台构建失败时仍发布已成功的产物
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
     needs: [build-desktop, build-android]
     runs-on: ubuntu-latest
     steps:
@@ -459,9 +472,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release-files/*
+          fail_on_unmatched_files: false
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          body: ${{ steps.release-notes.outputs.RELEASE_NOTES }}
           draft: false
           prerelease: false
         env:
