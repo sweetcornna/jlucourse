@@ -130,7 +130,6 @@ funky-lesson/
 ├── src-tauri/          # Tauri 后端源码
 ├── src-proxy/          # 代理服务器
 ├── note/               # 开发笔记
-├── public/             # 静态资源
 └── target/             # 编译输出
 ```
 

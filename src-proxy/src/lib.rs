@@ -22,7 +22,9 @@ pub async fn main() -> std::io::Result<()> {
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(20))
         .build()
-        .unwrap_or_default();
+        // 用 expect 而非 unwrap_or_default：构建失败时宁可显式崩溃，也不要静默退回
+        // 默认 Client（会重新启用证书校验，从而因缺中间证书而登录失败，难以排查）。
+        .expect("failed to build proxy HTTP client");
     let client = web::Data::new(client);
 
     HttpServer::new(move || {
