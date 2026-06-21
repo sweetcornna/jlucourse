@@ -1,0 +1,137 @@
+<!-- @dsCard group="Screens" name="抢课控制台 — Apple style" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FunkyLesson · 抢课控制台</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --surface: #ffffff; --surface-inset: #fbfbfd;
+    --fg: #1d1d1f; --fg-secondary: #6e6e73; --fg-tertiary: #86868b;
+    --accent: #0071e3; --accent-hover: #0077ed;
+    --success: #1d8a4e; --success-soft: #e7f6ed;
+    --danger: #d70015; --danger-soft: #fdecec;
+    --warning: #b25000;
+    --border: #d2d2d7; --border-soft: #e6e6eb;
+    --ring: rgba(0,113,227,.28);
+    --radius-field: 12px; --radius-card: 18px;
+    --shadow-card: 0 1px 2px rgba(0,0,0,.04), 0 10px 30px rgba(0,0,0,.05);
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display","SF Pro Text","Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    --ease: cubic-bezier(.4,0,.2,1);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:var(--font); color:var(--fg); background:var(--bg);
+    -webkit-font-smoothing:antialiased; min-height:100vh; }
+  .appbar { position:sticky; top:0; z-index:5; display:grid; grid-template-columns:40px 1fr 40px;
+    align-items:center; height:52px; padding:0 16px;
+    background:rgba(245,245,247,.8); backdrop-filter:saturate(180%) blur(20px);
+    border-bottom:1px solid rgba(0,0,0,.06); }
+  .icon-btn { width:36px; height:36px; border:none; background:transparent; color:var(--fg-secondary);
+    border-radius:10px; display:grid; place-items:center; }
+  .icon-btn svg { width:20px; height:20px; }
+  .appbar__title { text-align:center; font-size:16px; font-weight:600; letter-spacing:-.01em; }
+  .wrap { max-width:920px; margin:0 auto; padding:20px 20px 40px; display:flex; flex-direction:column; gap:16px; }
+  .card { background:var(--surface); border:1px solid var(--border-soft); border-radius:var(--radius-card); box-shadow:var(--shadow-card); }
+  /* control bar */
+  .control { display:flex; align-items:center; gap:20px; padding:18px 20px; flex-wrap:wrap; }
+  .stat__label { font-size:12px; color:var(--fg-tertiary); }
+  .stat__value { font-size:34px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; line-height:1.1; font-variant-numeric:tabular-nums; }
+  .pill { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:999px;
+    font-size:13px; font-weight:500; background:var(--success-soft); color:var(--success); }
+  .pill .dot { width:7px; height:7px; border-radius:50%; background:currentColor; box-shadow:0 0 0 3px rgba(29,138,78,.18); }
+  .spacer { flex:1; }
+  .actions { display:flex; gap:10px; }
+  .btn { height:42px; padding:0 18px; border:none; border-radius:var(--radius-field); font-size:14px; font-weight:600;
+    font-family:inherit; cursor:pointer; display:inline-flex; align-items:center; gap:7px; transition:background .15s, transform .12s var(--ease); }
+  .btn svg { width:16px; height:16px; }
+  .btn--primary { background:var(--accent); color:#fff; }
+  .btn--primary:hover { background:var(--accent-hover); }
+  .btn--danger { background:var(--danger-soft); color:var(--danger); }
+  .btn:active { transform:scale(.985); }
+  .btn--ghost { background:transparent; color:var(--accent); border:1px solid var(--border); }
+  .btn--ghost:hover { background:#f0f6fe; border-color:var(--accent); }
+  /* fallback strip */
+  .fallback { display:flex; align-items:center; gap:10px; padding:12px 16px; margin:0;
+    background:#fff7ed; border:1px solid #fde4c8; border-radius:var(--radius-field); color:var(--warning); font-size:13px; }
+  .fallback .grow { flex:1; }
+  .fallback .btn--ghost { color:var(--warning); border-color:#f3c89a; background:#fff; }
+  .fallback .btn--ghost:hover { background:#fffaf3; }
+  /* log */
+  .log__head { display:flex; align-items:center; gap:8px; padding:14px 18px 8px; }
+  .log__title { font-size:14px; font-weight:600; }
+  .live { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:var(--success); }
+  .live i { width:6px; height:6px; border-radius:50%; background:var(--success); animation:pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .log__body { padding:4px 12px 14px; display:flex; flex-direction:column; gap:4px; }
+  .row { display:flex; gap:10px; align-items:baseline; padding:8px 10px; border-radius:9px; background:var(--surface-inset);
+    border-left:3px solid var(--border); font-size:13px; }
+  .row .tag { font-family:var(--mono); color:var(--fg-secondary); min-width:96px; }
+  .row.ok { border-left-color:var(--success); } .row.ok .msg { color:var(--success); }
+  .row.wait { border-left-color:#c7c7cc; } .row.wait .msg { color:var(--fg-tertiary); }
+  .row.err { border-left-color:var(--danger); } .row.err .msg { color:var(--danger); }
+  /* course grid */
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .ccard__head { display:flex; align-items:center; gap:8px; padding:14px 18px; border-bottom:1px solid var(--border-soft); }
+  .ccard__head h4 { margin:0; font-size:14px; font-weight:600; }
+  .ccard__head .dot { width:8px; height:8px; border-radius:50%; }
+  .dot.green { background:var(--success); } .dot.blue { background:var(--accent); }
+  .badge { margin-left:auto; font-size:12px; font-weight:600; color:var(--fg-secondary); background:#f0f0f3; border-radius:999px; padding:2px 9px; }
+  .crow { display:flex; gap:10px; align-items:center; padding:11px 18px; border-bottom:1px solid var(--border-soft); }
+  .crow:last-child { border-bottom:none; }
+  .pip { width:7px; height:7px; border-radius:50%; flex:none; } .pip.green{background:var(--success);} .pip.blue{background:var(--accent);}
+  .cname { font-size:14px; font-weight:500; } .cmeta { font-size:12px; color:var(--fg-tertiary); margin-top:2px; }
+  .cmeta .mono { font-family:var(--mono); }
+  @media (max-width:720px){ .grid{ grid-template-columns:1fr; } }
+  @media (prefers-reduced-motion: reduce){ *{ animation:none!important; transition:none!important; } }
+</style>
+</head>
+<body>
+  <div class="appbar">
+    <button class="icon-btn" aria-label="返回"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+    <div class="appbar__title">抢课控制台</div>
+    <span></span>
+  </div>
+  <main class="wrap">
+    <section class="card control">
+      <div><div class="stat__label">总请求次数</div><div class="stat__value">1,284</div></div>
+      <span class="pill"><span class="dot"></span>运行中</span>
+      <span class="spacer"></span>
+      <div class="actions">
+        <button class="btn btn--primary"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>开始抢课</button>
+        <button class="btn btn--danger"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>停止</button>
+      </div>
+    </section>
+
+    <!-- 新功能占位：脚本兜底入口 -->
+    <div class="fallback">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      <span class="grow">脚本抢不到？打开官方选课页手动兜底，登录态自动带入。</span>
+      <button class="btn btn--ghost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>官方选课网站</button>
+    </div>
+
+    <section class="card">
+      <div class="log__head"><span class="log__title">实时状态</span><span class="live"><i></i>LIVE</span></div>
+      <div class="log__body">
+        <div class="row ok"><span class="tag">[高等数学]</span><span class="msg">选课成功</span></div>
+        <div class="row wait"><span class="tag">[大学英语]</span><span class="msg">等待中</span></div>
+        <div class="row err"><span class="tag">[线性代数]</span><span class="msg">课容量已满</span></div>
+        <div class="row wait"><span class="tag">[程序设计]</span><span class="msg">等待中</span></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <div class="ccard__head"><span class="dot green"></span><h4>已选课程</h4><span class="badge">1</span></div>
+        <div class="crow"><span class="pip green"></span><div><div class="cname">高等数学</div><div class="cmeta">教师: 张老师 | ID: <span class="mono">JXB0001</span></div></div></div>
+      </div>
+      <div class="card">
+        <div class="ccard__head"><span class="dot blue"></span><h4>待选课程（收藏）</h4><span class="badge">3</span></div>
+        <div class="crow"><span class="pip blue"></span><div><div class="cname">大学英语</div><div class="cmeta">教师: 李老师 | ID: <span class="mono">JXB0002</span></div></div></div>
+        <div class="crow"><span class="pip blue"></span><div><div class="cname">线性代数</div><div class="cmeta">教师: 王老师 | ID: <span class="mono">JXB0003</span></div></div></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
