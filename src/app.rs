@@ -8,7 +8,7 @@ use funky_lesson_core::{
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::*;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 // Toast types
@@ -348,6 +348,18 @@ fn classify_enroll(code: i64, msg: &str, try_if_capacity_full: bool) -> EnrollDe
     }
 }
 
+/// 在 done 标记里，从 start 开始环形查找下一门未完成课程的下标。
+fn next_pending(start: usize, done: &[bool]) -> Option<usize> {
+    let n = done.len();
+    if n == 0 {
+        return None;
+    }
+    (0..n).map(|off| (start + off) % n).find(|&i| !done[i])
+}
+
+// 并发抢课的工作协程数量（沿用原设计的 12 路并发以提升抢中率）。
+const ENROLL_WORKERS: usize = 12;
+
 // 选课函数
 pub async fn enroll_courses(
     courses: Vec<CourseInfo>,
@@ -377,19 +389,36 @@ pub async fn enroll_courses(
             .collect();
     });
 
-    // 每门课一条独立的轮询任务，各自只写自己的状态槽（idx），
-    // 取代原先 12 路线程共享游标、互相覆盖状态并可能下标越界的写法。
-    // active 计数在所有任务退出后把 is_running 复位，修复 UI 卡在“运行中”的问题。
-    let active = Arc::new(AtomicUsize::new(courses.len()));
+    let count = courses.len();
+    let courses = Arc::new(courses);
+    // 每门课一个“已完成”标记：成功 / 已选 / 已满(不再尝试) 后置位，worker 便不再请求它。
+    let done: Arc<Vec<AtomicBool>> = Arc::new((0..count).map(|_| AtomicBool::new(false)).collect());
+    // 共享游标：多个 worker 据此环形领取下一门未完成课程；课程数少于 worker 数时
+    // 多个 worker 会并发抢同一门课，恢复原先的高并发抢中策略，但写入按下标 get_mut 保护、
+    // 终止改用 per-course done 标记，规避旧实现的下标竞争 / 越界 / “一门成功停全部”。
+    let cursor = Arc::new(AtomicUsize::new(0));
+    // active 计数在所有 worker 退出后把 is_running 复位（修复 UI 卡在“运行中”）。
+    let active = Arc::new(AtomicUsize::new(ENROLL_WORKERS));
 
-    for (idx, course) in courses.into_iter().enumerate() {
+    for _ in 0..ENROLL_WORKERS {
         let token = token.clone();
         let batch_id = batch_id.clone();
         let app_state = app_state.clone();
+        let courses = courses.clone();
+        let done = done.clone();
+        let cursor = cursor.clone();
         let active = active.clone();
 
         spawn_local(async move {
             while app_state.should_continue.get() {
+                // 领取下一门未完成课程；全部完成则退出。
+                let snapshot: Vec<bool> = done.iter().map(|b| b.load(Ordering::Acquire)).collect();
+                let start = cursor.fetch_add(1, Ordering::Relaxed);
+                let Some(idx) = next_pending(start, &snapshot) else {
+                    break;
+                };
+                let course = &courses[idx];
+
                 app_state.enrollment_status.update(|status| {
                     status.total_requests = status.total_requests.saturating_add(1);
                 });
@@ -422,14 +451,14 @@ pub async fn enroll_courses(
                     }
                 });
 
-                // 致命错误（如未登录）停止全部课程；普通终态只停止本课程。
+                // 普通终态只标记本课程完成；致命错误（如未登录）停止全部课程。
+                if stop_self {
+                    done[idx].store(true, Ordering::Release);
+                }
                 if fatal {
                     app_state.should_continue.set(false);
                 }
-                if stop_self || fatal {
-                    break;
-                }
-                // 用户已停止则立即退出，不必再等待 200ms（缩短停止后的清空窗口）
+                // 用户已停止则立即退出，不必再等待 200ms（缩短停止后的清空窗口）。
                 if !app_state.should_continue.get() {
                     break;
                 }
@@ -438,7 +467,7 @@ pub async fn enroll_courses(
                 set_timeout(200).await;
             }
 
-            // 本任务退出：最后一个退出的任务把运行状态复位。
+            // 本 worker 退出：最后一个退出者把运行状态复位。
             if active.fetch_sub(1, Ordering::AcqRel) == 1 {
                 app_state.enrollment_status.update(|status| {
                     status.is_running = false;
@@ -951,7 +980,18 @@ pub fn App() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_enroll, log_kind, split_tag, status_kind};
+    use super::{classify_enroll, log_kind, next_pending, split_tag, status_kind};
+
+    #[test]
+    fn next_pending_skips_done_and_wraps() {
+        assert_eq!(next_pending(0, &[false, false, false]), Some(0));
+        assert_eq!(next_pending(1, &[false, false, false]), Some(1));
+        assert_eq!(next_pending(0, &[true, false, true]), Some(1)); // 跳过已完成的 0
+        assert_eq!(next_pending(2, &[false, true, true]), Some(0)); // 从 2 环绕回 0
+        assert_eq!(next_pending(5, &[true, false]), Some(1)); // start 超出长度也能环绕
+        assert_eq!(next_pending(0, &[true, true]), None); // 全部完成
+        assert_eq!(next_pending(0, &[]), None); // 空
+    }
 
     #[test]
     fn classify_enroll_terminal_and_retry_states() {
