@@ -5,6 +5,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::time::Duration;
 
 #[actix_web::main]
 pub async fn main() -> std::io::Result<()> {
@@ -13,7 +14,18 @@ pub async fn main() -> std::io::Result<()> {
 
     info!("Starting universal proxy server at http://127.0.0.1:3030");
 
-    HttpServer::new(|| {
+    // 复用单个 Client（reqwest 内部是 Arc + 连接池），避免每个请求都新建
+    // TCP/TLS 连接；并加上连接/请求超时，防止上游卡死时 worker 无限挂起。
+    // danger_accept_invalid_certs 的原因见 proxy_handler 处注释。
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
+        .build()
+        .unwrap_or_default();
+    let client = web::Data::new(client);
+
+    HttpServer::new(move || {
         let cors = Cors::default()
             .allowed_origin("http://tauri.localhost")
             .allowed_origin("http://localhost:1420")
@@ -31,7 +43,7 @@ pub async fn main() -> std::io::Result<()> {
             .supports_credentials()
             .max_age(3600);
 
-        App::new().wrap(cors).service(
+        App::new().app_data(client.clone()).wrap(cors).service(
             web::resource("/api/proxy/{endpoint:.*}")
                 .route(web::post().to(proxy_handler))
                 .route(web::get().to(proxy_handler_get)),
@@ -75,16 +87,15 @@ fn is_allowed_upstream(url: &str) -> bool {
     }
 }
 
-async fn proxy_handler_get(req: HttpRequest, path: web::Path<String>) -> HttpResponse {
+async fn proxy_handler_get(
+    req: HttpRequest,
+    path: web::Path<String>,
+    client: web::Data<reqwest::Client>,
+) -> HttpResponse {
     let endpoint = path.into_inner();
     let params = req.query_string();
     debug!("Handling GET proxy request for endpoint: {endpoint}");
     debug!("Query params: {params}");
-
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
 
     // 获取原始URL
     let original_url = match endpoint.as_str() {
@@ -156,6 +167,7 @@ async fn proxy_handler(
     body: web::Json<ProxyRequest>,
     req: HttpRequest,
     path: web::Path<String>,
+    client: web::Data<reqwest::Client>,
 ) -> HttpResponse {
     let endpoint = path.into_inner();
     debug!("Handling proxy request for endpoint: {endpoint}");
@@ -167,14 +179,10 @@ async fn proxy_handler(
         return HttpResponse::Forbidden().json(json!({ "error": "upstream host not allowed" }));
     }
 
-    // 说明：服务器证书本身有效（DigiCert，*.jlu.edu.cn），但只下发叶子证书、
-    // 不附带 RapidSSL 中间证书；rustls 不会自动补链（webpki 根 + 无 AIA），
-    // 直接关闭此项会导致证书校验失败、登录中断。移除需配合“固定中间证书为
-    // 附加根”或平台校验器，并对真机做联调验证（见优化报告后续建议）。
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
+    // 注：共享 Client（在 main 构建）关闭了证书校验——服务器证书本身有效
+    // （DigiCert，*.jlu.edu.cn），但只下发叶子证书、不附带 RapidSSL 中间证书；
+    // rustls 不会自动补链（webpki 根 + 无 AIA），直接开启校验会导致登录中断。
+    // 需配合“固定中间证书为附加根”或平台校验器并真机联调后才能移除（见后续建议）。
 
     let auth_token = match req.headers().get(actix_web::http::header::AUTHORIZATION) {
         Some(token) => match token.to_str() {
