@@ -8,8 +8,8 @@ use funky_lesson_core::{
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos::*;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 
 // Toast types
 #[derive(Clone, PartialEq)]
@@ -319,6 +319,35 @@ pub async fn get_courses(app_state: &AppState) -> Result<()> {
     Ok(())
 }
 
+// 单次选课请求结果的语义判定（纯函数，便于单元测试）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnrollDecision {
+    /// 写入该课程状态行的文案
+    label: &'static str,
+    /// 该课程是否已到达终态、应停止其自身的轮询
+    stop_self: bool,
+    /// 是否为致命错误（如未登录），应停止所有课程的轮询
+    fatal: bool,
+}
+
+fn classify_enroll(code: i64, msg: &str, try_if_capacity_full: bool) -> EnrollDecision {
+    let d = |label, stop_self, fatal| EnrollDecision {
+        label,
+        stop_self,
+        fatal,
+    };
+    match (code, msg) {
+        (200, _) => d("选课成功", true, false),
+        (500, "该课程已在选课结果中") => d("已选", true, false),
+        (500, "本轮次选课暂未开始") => d("未开始", false, false),
+        (500, "课容量已满") if !try_if_capacity_full => d("已满", true, false),
+        (500, "课容量已满") => d("等待中", false, false),
+        (500, "参数校验不通过") => d("参数错误", false, false),
+        (401, _) => d("未登录", true, true),
+        _ => d("失败", false, false),
+    }
+}
+
 // 选课函数
 pub async fn enroll_courses(
     courses: Vec<CourseInfo>,
@@ -341,33 +370,30 @@ pub async fn enroll_courses(
     app_state.should_continue.set(true);
     app_state.enrollment_status.update(|status| {
         status.is_running = true;
+        status.total_requests = 0;
         status.course_statuses = courses
             .iter()
             .map(|c| format!("[{}]等待中", c.KCM))
             .collect();
     });
 
-    let courses_count = courses.len();
+    // 每门课一条独立的轮询任务，各自只写自己的状态槽（idx），
+    // 取代原先 12 路线程共享游标、互相覆盖状态并可能下标越界的写法。
+    // active 计数在所有任务退出后把 is_running 复位，修复 UI 卡在“运行中”的问题。
+    let active = Arc::new(AtomicUsize::new(courses.len()));
 
-    // 创建工作任务
-    for thread_id in 0..12 {
+    for (idx, course) in courses.into_iter().enumerate() {
         let token = token.clone();
         let batch_id = batch_id.clone();
-        let courses = courses.clone();
         let app_state = app_state.clone();
+        let active = active.clone();
 
         spawn_local(async move {
-            let mut course_idx = thread_id % courses_count;
-
             while app_state.should_continue.get() {
-                let course = &courses[course_idx];
-
-                // 更新状态
                 app_state.enrollment_status.update(|status| {
-                    status.total_requests += 1;
+                    status.total_requests = status.total_requests.saturating_add(1);
                 });
 
-                // 尝试选课
                 let result = gloo::select_course_proxy(
                     &token,
                     &batch_id,
@@ -377,54 +403,43 @@ pub async fn enroll_courses(
                 )
                 .await;
 
-                match result {
+                let (label, stop_self, fatal) = match result {
                     Ok(json) => {
                         let code = json["code"].as_i64().unwrap_or(0);
                         let msg = json["msg"].as_str().unwrap_or("");
-
-                        let status = match (code, msg) {
-                            (200, _) => {
-                                app_state.should_continue.set(false);
-                                "选课成功"
-                            }
-                            (500, "该课程已在选课结果中") => {
-                                app_state.should_continue.set(false);
-                                "已选"
-                            }
-                            (500, "本轮次选课暂未开始") => "未开始",
-                            (500, "课容量已满") if !try_if_capacity_full => {
-                                app_state.should_continue.set(false);
-                                "已满"
-                            }
-                            (500, "课容量已满") => "等待中",
-                            (500, "参数校验不通过") => "参数错误",
-                            (401, _) => {
-                                app_state.should_continue.set(false);
-                                "未登录"
-                            }
-                            _ => "失败",
-                        };
-
-                        app_state.enrollment_status.update(|s| {
-                            s.course_statuses[course_idx] = format!("[{}]{}", course.KCM, status);
-                        });
+                        let decision = classify_enroll(code, msg, try_if_capacity_full);
+                        (decision.label, decision.stop_self, decision.fatal)
                     }
                     Err(e) => {
-                        app_state.enrollment_status.update(|s| {
-                            s.course_statuses[course_idx] = format!("[{}]请求错误", course.KCM);
-                        });
                         log::error!("请求错误: {e:?}");
+                        ("请求错误", false, false)
                     }
-                }
+                };
 
-                if !app_state.should_continue.get() {
+                app_state.enrollment_status.update(|s| {
+                    if let Some(slot) = s.course_statuses.get_mut(idx) {
+                        *slot = format!("[{}]{}", course.KCM, label);
+                    }
+                });
+
+                // 致命错误（如未登录）停止全部课程；普通终态只停止本课程。
+                if fatal {
+                    app_state.should_continue.set(false);
+                }
+                if stop_self || fatal {
                     break;
                 }
 
-                course_idx = (course_idx + 1) % courses_count;
-
                 // 短暂延迟避免请求过快
                 set_timeout(200).await;
+            }
+
+            // 本任务退出：最后一个退出的任务把运行状态复位。
+            if active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                app_state.enrollment_status.update(|status| {
+                    status.is_running = false;
+                });
+                app_state.should_continue.set(false);
             }
         });
     }
@@ -459,7 +474,9 @@ pub fn App() -> impl IntoView {
     let (captcha_uuid, set_captcha_uuid) = signal(String::new());
     let (status_message, set_status_message) = signal("请登录".to_string());
     let (step, set_step) = signal(1);
-    let (is_enrolling, set_is_enrolling) = signal(false);
+    // 抢课中状态由真实的 enrollment_status.is_running 派生，避免出现“UI 显示运行中
+    // 但任务其实早已结束”的不一致（所有任务退出后 is_running 会被复位）。
+    let is_enrolling = Memo::new(move |_| app_state.get().enrollment_status.get().is_running);
 
     // Back button handler
     let handle_back = move |_| {
@@ -602,24 +619,32 @@ pub fn App() -> impl IntoView {
 
     // 开始抢课
     let handle_enroll = move |_| {
-        set_is_enrolling.set(true);
         let current_state = app_state.get();
+        let courses = current_state.favorite_courses.get();
+        if courses.is_empty() {
+            toast_warning("暂无收藏课程，请先到选课网站收藏想抢的课程");
+            return;
+        }
+        // 立即给出反馈（任务在下个微任务才真正把 is_running 置位）
+        current_state
+            .enrollment_status
+            .update(|s| s.is_running = true);
         toast_info("开始抢课...");
 
         spawn_local(async move {
-            let courses = current_state.favorite_courses.get();
             if let Err(e) = enroll_courses(courses, true, &current_state).await {
                 let error_msg = format!("抢课出错：{e:?}");
                 set_status_message.set(error_msg.clone());
                 toast_error(error_msg);
-                set_is_enrolling.set(false);
+                current_state
+                    .enrollment_status
+                    .update(|s| s.is_running = false);
             }
         });
     };
 
     // 停止抢课
     let handle_stop_enroll = move |_| {
-        set_is_enrolling.set(false);
         let current_state = app_state.get();
         stop_enrollment(&current_state);
         toast_warning("已停止抢课");
@@ -922,7 +947,34 @@ pub fn App() -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::{log_kind, split_tag, status_kind};
+    use super::{classify_enroll, log_kind, split_tag, status_kind};
+
+    #[test]
+    fn classify_enroll_terminal_and_retry_states() {
+        // 成功 / 已选：停止本课程，不致命
+        let s = classify_enroll(200, "", false);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("选课成功", true, false));
+        let s = classify_enroll(500, "该课程已在选课结果中", true);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("已选", true, false));
+
+        // 容量已满：try=false 停止本课程标“已满”；try=true 继续“等待中”
+        let s = classify_enroll(500, "课容量已满", false);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("已满", true, false));
+        let s = classify_enroll(500, "课容量已满", true);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("等待中", false, false));
+
+        // 暂未开始 / 参数错误 / 未知：继续轮询，非终态、非致命
+        let s = classify_enroll(500, "本轮次选课暂未开始", true);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("未开始", false, false));
+        let s = classify_enroll(500, "参数校验不通过", true);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("参数错误", false, false));
+        let s = classify_enroll(500, "天降陨石", true);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("失败", false, false));
+
+        // 未登录：致命，应停止所有课程
+        let s = classify_enroll(401, "", true);
+        assert_eq!((s.label, s.stop_self, s.fatal), ("未登录", true, true));
+    }
 
     #[test]
     fn status_kind_maps_login_states() {
