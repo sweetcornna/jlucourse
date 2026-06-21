@@ -7,8 +7,6 @@ on:
       - 'v*'
   pull_request:
     branches: [ main ]
-  release:
-    types: [ published ]
 
     # 添加必要的权限
 permissions:
