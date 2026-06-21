@@ -592,22 +592,15 @@ extern "C" {
 // 兜底（A）：打开官方选课网站。
 // 桌面端（Tauri）→ 内嵌 webview，并把当前 token / 批次注入官网 sessionStorage（同一会话/同一设备）。
 // 非桌面端（Web / Android 无原生子窗口）→ 退化为系统浏览器打开（需自行登录）。
-fn open_official_fallback(app_state: AppState) {
-    let Some(token) = app_state.token.get() else {
-        toast_error("请先登录后再使用兜底");
-        return;
-    };
+fn open_official_fallback() {
+    // app 的登录态在代理侧（含服务端会话），无法可靠转移到 webview，故这里只打开
+    // 官网供手动登录；脚本失效时的「就地补刀」请用每门课的「选一次」（走代理、有效）。
     let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("token"),
-        &JsValue::from_str(&token),
-    );
     if __funky_tauri_invoke("open_official_fallback", payload.into()) {
-        toast_info("已在内嵌窗口打开官方选课网站（已带入登录态）");
+        toast_info("已打开官方选课网站，请在窗口内登录后手动选课");
     } else {
         match open_external_browser("https://icourses.jlu.edu.cn/xsxk/profile/index.html") {
-            Ok(()) => toast_warning("未检测到桌面环境：已用系统浏览器打开（需自行登录）"),
+            Ok(()) => toast_warning("已用系统浏览器打开官方网站，请自行登录"),
             Err(_) => toast_error("无法打开官方网站"),
         }
     }
@@ -994,14 +987,14 @@ pub fn App() -> impl IntoView {
                             </div>
                         </div>
 
-                        // 脚本兜底入口（A）：打开内嵌官方选课网站，带入登录态
+                        // 脚本兜底入口：打开内嵌官方选课网站（手动登录后手动操作）
                         <div class="fallback">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
-                            <span class="fallback__grow">"脚本抢不到？打开官方选课页手动兜底，登录态自动带入。"</span>
+                            <span class="fallback__grow">"脚本不灵？打开官方选课页手动抢；想就地补刀用每门课的「选一次」。"</span>
                             <button
                                 class="btn btn--ghost btn--sm"
                                 type="button"
-                                on:click=move |_| open_official_fallback(app_state.get())
+                                on:click=move |_| open_official_fallback()
                             >"官方选课网站"</button>
                         </div>
 
