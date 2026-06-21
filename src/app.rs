@@ -75,6 +75,50 @@ pub fn toast_warning(message: impl Into<String>) {
     show_toast(message.into(), ToastType::Warning);
 }
 
+// ---- UI helpers (presentation only) ---------------------------------------
+
+// 根据状态文本推断登录状态行的语义类型
+fn status_kind(msg: &str) -> &'static str {
+    if msg.contains("成功") {
+        "success"
+    } else if msg.contains("失败") || msg.contains("错误") {
+        "error"
+    } else if msg.contains("请输入") || msg.contains("请重新") || msg.contains("请登录") {
+        "warning"
+    } else if msg.contains("正在") || msg.contains("设置批次") || msg.contains("获取") {
+        "loading"
+    } else {
+        "idle"
+    }
+}
+
+// 根据选课状态文本推断日志行配色
+fn log_kind(s: &str) -> &'static str {
+    if s.contains("成功") || s.contains("已选") {
+        "success"
+    } else if s.contains("等待") || s.contains("未开始") {
+        "wait"
+    } else if s.contains("错误")
+        || s.contains("失败")
+        || s.contains("已满")
+        || s.contains("未登录")
+        || s.contains("参数")
+    {
+        "error"
+    } else {
+        "info"
+    }
+}
+
+// 把 "[课程名]状态" 拆分为 (标签, 正文)
+fn split_tag(s: &str) -> (String, String) {
+    if let Some(idx) = s.find(']') {
+        (s[..=idx].to_string(), s[idx + 1..].trim_start().to_string())
+    } else {
+        (String::new(), s.to_string())
+    }
+}
+
 // Leptos资源和信号
 #[derive(Clone)]
 pub struct AppState {
@@ -119,7 +163,7 @@ impl AppState {
     }
 }
 
-// Toast Component - 优化后的版本
+// Toast Component — 现代化、克制的轻量通知
 #[component]
 pub fn ToastContainer() -> impl IntoView {
     let toasts = if let Ok(toasts_signal) = TOAST_STORE.lock() {
@@ -129,36 +173,31 @@ pub fn ToastContainer() -> impl IntoView {
     };
 
     view! {
-        <div class="fixed top-4 right-4 z-50 space-y-3 pointer-events-none">
+        <div class="toast-container">
             <For
                 each=move || toasts.get()
                 key=|toast| toast.id
                 children=move |toast| {
-                    let (base_color, bg_color, border_color, icon) = match toast.toast_type {
-                        ToastType::Success => (
-                            "text-green-100",
-                            "bg-green-600/90",
-                            "border-green-400/60",
-                            "✅"
-                        ),
-                        ToastType::Error => (
-                            "text-red-100",
-                            "bg-red-600/90",
-                            "border-red-400/60",
-                            "❌"
-                        ),
-                        ToastType::Info => (
-                            "text-blue-100",
-                            "bg-blue-600/90",
-                            "border-blue-400/60",
-                            "ℹ️"
-                        ),
-                        ToastType::Warning => (
-                            "text-orange-100",
-                            "bg-orange-600/90",
-                            "border-orange-400/60",
-                            "⚠️"
-                        ),
+                    let cls = match toast.toast_type {
+                        ToastType::Success => "toast toast--success",
+                        ToastType::Error => "toast toast--error",
+                        ToastType::Info => "toast toast--info",
+                        ToastType::Warning => "toast toast--warning",
+                    };
+
+                    let icon = match toast.toast_type {
+                        ToastType::Success => view! {
+                            <svg class="toast__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                        }.into_any(),
+                        ToastType::Error => view! {
+                            <svg class="toast__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+                        }.into_any(),
+                        ToastType::Info => view! {
+                            <svg class="toast__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                        }.into_any(),
+                        ToastType::Warning => view! {
+                            <svg class="toast__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                        }.into_any(),
                     };
 
                     let close_toast = {
@@ -173,27 +212,10 @@ pub fn ToastContainer() -> impl IntoView {
                     };
 
                     view! {
-                        <div class={format!(
-                            "flex items-start justify-between gap-3 p-2 rounded-xl backdrop-blur-sm border shadow-lg max-w-sm transform transition-all duration-500 ease-out pointer-events-auto {bg_color} {border_color} {base_color} animate-in slide-in-from-top-2 fade-in zoom-in-95"
-                        )}
-                        style="animation-duration: 0.4s;">
-                            <div>
-                                {/* Icon */}
-                                <span class="text-lg flex-shrink-0">{icon}</span>
-
-                                {/* Content */}
-                                <span class="text-sm font-medium leading-relaxed break-words">
-                                    {toast.message}
-                                </span>
-                            </div>
-                            {/* Close button */}
-                            <button
-                                class="text-white/70 hover:text-white text-xl font-bold leading-none flex-shrink-0 w-6 h-6 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors duration-200"
-                                on:click=close_toast
-                                aria-label="关闭通知"
-                            >
-                                "×"
-                            </button>
+                        <div class=cls>
+                            {icon}
+                            <span class="toast__msg">{toast.message}</span>
+                            <button class="toast__close" on:click=close_toast aria-label="关闭通知">"×"</button>
                         </div>
                     }
                 }
@@ -467,7 +489,7 @@ pub fn App() -> impl IntoView {
         }
     };
 
-    // 获取验证码 - 现在没有闭包问题了！
+    // 获取验证码
     let handle_get_captcha = move |_| {
         spawn_local(async move {
             match get_captcha().await {
@@ -609,7 +631,7 @@ pub fn App() -> impl IntoView {
         toast_warning("已停止抢课");
     };
 
-    // 初始化时获取验证码 - 现在不会报错了！
+    // 初始化时获取验证码
     Effect::new(move |_| {
         handle_get_captcha(());
     });
@@ -618,293 +640,288 @@ pub fn App() -> impl IntoView {
     let batch_list = move || app_state.get().batch_list.get();
 
     view! {
-            <div
-                id="app"
-                class="min-h-screen mx-auto w-full relative flex flex-col items-center justify-end p-4 sm:p-6"
-                style="background: linear-gradient(135deg, rgba(0,0,0,0.1), rgba(0,0,0,0.05)), url('./public/91403676_p0_z2.jpg'); background-size: cover; background-position: center 20%; background-attachment: fixed;"
-            >
+        <div class="app-root">
 
-    {/* Logo和标题 - 独立的小卡片 */}
-    <div class="text-center mb-6 bg-black/30 backdrop-blur-sm rounded-2xl p-3 border border-white/20"
-        class:hidden={move || step.get() != 1}
-        >
-        <h1 class="text-lg sm:text-xl font-bold text-white drop-shadow-lg">
-            "FunkyLesson自动抢课！(๑˃ᴗ˂)ﻭ"
-        </h1>
+            // ============================ 登录 ============================
+            <div class="screen" class:hidden=move || step.get() != 1>
+                <div class="login">
+                    <form class="login__card" on:submit=handle_login>
+                        <div class="brand">
+                            <div class="brand__mark" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none"><path d="M13 2 4.6 13.2a.8.8 0 0 0 .64 1.28H10.2l-1.1 7.2a.5.5 0 0 0 .9.38L19.4 10.8a.8.8 0 0 0-.64-1.28H13.7L14.9 2.6A.5.5 0 0 0 13 2Z" fill="currentColor"/></svg>
+                            </div>
+                            <div class="brand__name">"FunkyLesson"</div>
+                            <div class="brand__sub">"吉林大学选课助手"</div>
+                        </div>
 
-        {/* 简单的 GitHub 提示 */}
-        <div class="mt-1">
-            <ExternalLink
-                href="https://github.com/Islatri/funky-lesson".to_string()
-                class="inline-flex items-center gap-1.5 text-white/70 hover:text-white text-xs transition-colors duration-200".to_string()
-            >
-                {/* GitHub 图标 */}
-                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-                </svg>
-                <span>"喜欢的话就戳我去点颗星吧～(∠・ω< )⌒☆"</span>
-            </ExternalLink>
-            // <a
-            //     href="https://github.com/Islatri/funky-lesson"
-            //     target="_blank"
-            //     rel="noopener noreferrer"
-            //     class="inline-flex items-center gap-1.5 text-white/70 hover:text-white text-xs transition-colors duration-200"
-            // >
-            //     {/* GitHub 图标 */}
-            //     <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-            //         <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-            //     </svg>
-            //     <span>"喜欢的话就戳我去点颗星吧～(∠・ω< )⌒☆"</span>
-            // </a>
-        </div>
-        <div class="w-12 h-0.5 bg-gradient-to-r from-blue-400 to-purple-400 rounded-full mx-auto mt-1"></div>
+                        <div class="field">
+                            <label class="field__label" for="username">"学号"<span class="req" aria-hidden="true">"*"</span></label>
+                            <input
+                                id="username"
+                                class="input"
+                                type="text"
+                                inputmode="numeric"
+                                autocomplete="username"
+                                placeholder="请输入学号"
+                                on:input=move |ev| set_username.set(event_target_value(&ev))
+                            />
+                        </div>
 
-        </div>
-                // 登录表单
-                <div class="w-full max-w-sm sm:max-w-md mx-auto" class:hidden={move || step.get() != 1}>
-                    <form class="mb-4 space-y-3" on:submit=handle_login>
-                        <div class="bg-black/30 backdrop-blur-sm rounded-xl p-4 border border-white/20 space-y-3">
-                            <div>
-                                <label class="block text-xs font-medium text-white/80 mb-2">
-                                    学号 <span class="text-red-400">*</span>
-                                </label>
+                        <div class="field">
+                            <label class="field__label" for="password">"密码"<span class="req" aria-hidden="true">"*"</span></label>
+                            <input
+                                id="password"
+                                class="input"
+                                type="password"
+                                autocomplete="current-password"
+                                placeholder="请输入密码（默认身份证后6位）"
+                                on:input=move |ev| set_password.set(event_target_value(&ev))
+                            />
+                        </div>
+
+                        <div class="field">
+                            <label class="field__label" for="captcha">"验证码"<span class="req" aria-hidden="true">"*"</span></label>
+                            <div class="captcha-row">
                                 <input
-                                    id="username"
-                                    class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-300"
+                                    id="captcha"
+                                    class="input"
                                     type="text"
-                                    placeholder="请输入学号"
-                                    on:input=move |ev| set_username.set(event_target_value(&ev))
+                                    maxlength="4"
+                                    autocomplete="off"
+                                    placeholder="请输入验证码"
+                                    on:input=move |ev| set_captcha.set(event_target_value(&ev))
                                 />
-                            </div>
-                            <div>
-                                <label class="block text-xs font-medium text-white/80 mb-2">
-                                    密码 <span class="text-red-400">*</span>
-                                </label>
-                                <input
-                                    id="password"
-                                    class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-300"
-                                    type="password"
-                                    placeholder="请输入密码(默认是身份证后6位)"
-                                    on:input=move |ev| set_password.set(event_target_value(&ev))
-                                />
-                            </div>
-
-                            // 验证码部分
-                            <div>
-                                <label class="block text-xs font-medium text-white/80 mb-2">验证码</label>
-                                <div class="flex items-center gap-2 mb-3">
-
-                                    <input
-                                        type="text"
-                                        class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-white text-sm placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-300"
-                                        placeholder="请输入验证码"
-                                        on:input=move |ev| set_captcha.set(event_target_value(&ev))
-                                    />
-                                    <img
-                                        src={move || captcha_image_src.get()}
-                                        alt="验证码"
-                                        class="h-8 border border-white/20 rounded flex-shrink-0"
-                                    />
-                                    <button
-                                        type="button"
-                                        class="bg-green-500/80 hover:bg-green-600/80 text-white text-xs font-medium py-1.5 px-3 rounded-lg transition-all duration-300 whitespace-nowrap"
-                                        on:click=move |_| handle_get_captcha(())
-                                    >
-                                        "刷新"
-                                    </button>
+                                <div class="captcha-img" role="img" aria-label="验证码图片">
+                                    <img src=move || captcha_image_src.get() alt="验证码" />
                                 </div>
-                            </div>
-
-                            <div class="flex flex-row items-center justify-between gap-3">
-                                <p class={move || {
-                                    let base = "text-xs sm:text-sm font-mono break-words leading-relaxed flex-1";
-                                    if status_message.get().contains("成功") {
-                                        format!("{base} text-green-300")
-                                    } else if status_message.get().contains("失败") {
-                                        format!("{base} text-red-300")
-                                    } else if status_message.get().contains("请输入") {
-                                        format!("{base} text-orange-300")
-                                    } else {
-                                        format!("{base} text-white/70")
-                                    }
-                                }}>
-                                    {move || status_message.get()}
-                                </p>
-
                                 <button
-                                    class="bg-blue-500/80 hover:bg-blue-600/80 text-white font-medium py-2 px-4 rounded-lg transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-400"
-                                    type="submit"
+                                    type="button"
+                                    class="captcha-refresh"
+                                    aria-label="刷新验证码"
+                                    title="刷新验证码"
+                                    on:click=move |_| handle_get_captcha(())
                                 >
-                                    "登录"
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
                                 </button>
                             </div>
+                        </div>
+
+                        <p class="status-line" data-kind=move || status_kind(&status_message.get())>
+                            {move || status_message.get()}
+                        </p>
+
+                        <button class="btn btn--primary btn--block btn--lg" type="submit">"登录"</button>
+
+                        <div class="gh-wrap">
+                            <ExternalLink
+                                href="https://github.com/Islatri/funky-lesson".to_string()
+                                class="gh-link".to_string()
+                            >
+                                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.3-1.7-1.3-1.7-1.06-.72.08-.71.08-.71 1.17.08 1.79 1.2 1.79 1.2 1.04 1.78 2.73 1.27 3.4.97.1-.76.41-1.27.74-1.56-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.27 5.69.42.36.79 1.07.79 2.16v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+                                <span>"在 GitHub 上查看源码"</span>
+                            </ExternalLink>
                         </div>
                     </form>
                 </div>
+            </div>
 
-                // 批次选择
-                <div class="w-full max-w-sm sm:max-w-md mx-auto" class:hidden={move || step.get() != 2}>
-                    <div class="bg-black/30 backdrop-blur-sm rounded-xl p-4 border border-white/20 space-y-4">
-                        // Back button and title
-                        <div class="flex items-center justify-between">
-                            <button
-                                class="flex items-center gap-2 text-white/70 hover:text-white text-sm transition-colors duration-300"
-                                on:click=handle_back
-                            >
-                                <span class="text-lg">"←"</span>
-                                "返回"
-                            </button>
-                            <div class="text-center flex-1">
-                                <h2 class="text-lg sm:text-xl font-bold text-white drop-shadow-lg">"选择批次"</h2>
-                            </div>
-                            <div class="w-12"></div> // Spacer for centering
-                        </div>
-                        <div class="w-8 h-0.5 bg-gradient-to-r from-blue-400 to-purple-400 rounded-full mx-auto"></div>
-
-                        <div class="space-y-2">
-                            <For
-                                each=move || batch_list().into_iter().enumerate()
-                                key=|(_idx, batch)| batch.code.clone()
-                                children=move |(idx, batch)| {
-                                    let handle_select = handle_batch_select;
-                                    view! {
-                                        <button
-                                            class="w-full text-left px-4 py-3 bg-white/10 hover:bg-white/20 border border-white/20 rounded-lg text-white text-sm transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                                            on:click=move |_| handle_select(idx)
-                                            disabled=move || is_enrolling.get()
-                                        >
-                                            <div class="font-medium">{batch.name}</div>
-                                            <div class="text-xs text-white/70 mt-1">{format!("批次代码: {} | 批次 {}", batch.code, idx)}</div>
-                                        </button>
-                                    }
+            // ============================ 选择批次 ============================
+            <div class="screen" class:hidden=move || step.get() != 2>
+                <div class="appbar">
+                    <button class="icon-btn" type="button" on:click=handle_back aria-label="返回">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+                    </button>
+                    <div class="appbar__title">"选择批次"</div>
+                    <span></span>
+                </div>
+                <div class="batch-wrap">
+                    <p class="batch-hint">"请选择要参与的选课批次，进入后即可获取课程并开始抢课。"</p>
+                    <div class="batch-list">
+                        <For
+                            each=move || batch_list().into_iter().enumerate()
+                            key=|(_idx, batch)| batch.code.clone()
+                            children=move |(idx, batch)| {
+                                let handle_select = handle_batch_select;
+                                let code = batch.code.clone();
+                                view! {
+                                    <button
+                                        class="batch-card"
+                                        type="button"
+                                        on:click=move |_| handle_select(idx)
+                                        disabled=move || is_enrolling.get()
+                                    >
+                                        <span class="batch-card__icon" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                                        </span>
+                                        <span class="batch-card__body">
+                                            <span class="batch-card__name">{batch.name}</span>
+                                            <span class="batch-card__code">"批次代码："<span class="mono">{code}</span></span>
+                                        </span>
+                                        <span class="batch-card__go" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                                        </span>
+                                    </button>
                                 }
-                            />
-                        </div>
+                            }
+                        />
                     </div>
                 </div>
+            </div>
 
-                // 课程选择和抢课
-                <div class="w-full max-w-4xl mx-auto" class:hidden={move || step.get() != 3}>
-                    <div class="space-y-4">
+            // ============================ 抢课控制台 ============================
+            <div class="screen" class:hidden=move || step.get() != 3>
+                <div class="appbar">
+                    <button class="icon-btn" type="button" on:click=handle_back disabled=move || is_enrolling.get() aria-label="返回">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+                    </button>
+                    <div class="appbar__title">"抢课控制台"</div>
+                    <span></span>
+                </div>
 
-                        // Back button and title with request statistics
-                        <div class="text-center mb-4">
-                            <div class="flex items-center justify-between mb-2">
-                                <button
-                                    class="flex items-center gap-2 text-white/70 hover:text-white text-sm transition-colors duration-300"
-                                    on:click=handle_back
-                                    disabled=move || is_enrolling.get()
-                                >
-                                    <span class="text-lg">"←"</span>
-                                    "返回"
-                                </button>
-                                <h2 class="text-lg sm:text-xl font-bold text-white drop-shadow-lg flex-1">"抢课控制台"</h2>
-                                <div class="w-12"></div> // Spacer
-                            </div>
-                            <div class="w-12 h-0.5 bg-gradient-to-r from-blue-400 to-purple-400 rounded-full mx-auto mb-3"></div>
-                            <div class="bg-black/30 backdrop-blur-sm rounded-lg p-3 border border-white/20">
-                                <span class="text-white/80 text-sm">"总请求次数: "</span>
-                                <span class="text-blue-300 font-bold text-lg">
+                <div class="console">
+                    <div class="console__inner">
+
+                        // 控制条
+                        <div class="card control-bar">
+                            <div class="stat">
+                                <span class="stat__label">"总请求次数"</span>
+                                <span class="stat__value">
                                     {move || app_state.get().enrollment_status.get().total_requests}
                                 </span>
                             </div>
+                            <span class="status-pill" data-state=move || if is_enrolling.get() { "running" } else { "idle" }>
+                                <span class="dot"></span>
+                                <span>{move || if is_enrolling.get() { "运行中" } else { "已停止" }}</span>
+                            </span>
+                            <div class="control-actions">
+                                <button
+                                    class="btn btn--success"
+                                    type="button"
+                                    on:click=handle_enroll
+                                    disabled=move || is_enrolling.get()
+                                >
+                                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                                    "开始抢课"
+                                </button>
+                                <button
+                                    class="btn btn--danger"
+                                    type="button"
+                                    on:click=handle_stop_enroll
+                                    disabled=move || !is_enrolling.get()
+                                >
+                                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+                                    "停止抢课"
+                                </button>
+                            </div>
                         </div>
 
-                        // 课程状态输出
-                        <div class="bg-black/80 backdrop-blur-sm text-green-400 p-4 rounded-xl h-48 sm:h-64 overflow-y-auto font-mono border border-white/20">
-                            <div class="text-xs text-white/60 mb-2 uppercase tracking-wide">"实时状态"</div>
-                            <For
-                                each=move || app_state.get().enrollment_status.get().course_statuses
-                                key=|status| status.clone()
-                                children=move |status| {
-                                    view! {
-                                        <div class="whitespace-pre-wrap text-sm leading-relaxed">{status}</div>
+                        // 实时状态日志
+                        <div class="log" data-live=move || if is_enrolling.get() { "true" } else { "false" }>
+                            <div class="log__head">
+                                <span class="log__title">"实时状态"<span class="live"><i></i>"LIVE"</span></span>
+                            </div>
+                            <div class="log__body" role="log" aria-live="polite">
+                                <Show
+                                    when=move || app_state.get().enrollment_status.get().course_statuses.is_empty()
+                                    fallback=move || view! {
+                                        <For
+                                            each=move || app_state.get().enrollment_status.get().course_statuses
+                                            key=|status| status.clone()
+                                            children=move |status| {
+                                                let kind = log_kind(&status);
+                                                let (tag, msg) = split_tag(&status);
+                                                view! {
+                                                    <div class="log-line" data-kind=kind>
+                                                        <span class="tag">{tag}</span>
+                                                        <span class="msg">{msg}</span>
+                                                    </div>
+                                                }
+                                            }
+                                        />
                                     }
-                                }
-                            />
-                        </div>
-
-                        // 控制按钮
-                        <div class="flex flex-row justify-center gap-3 sm:gap-4">
-                            <button
-                                class="bg-green-500/80 hover:bg-green-600/80 text-white font-medium py-3 px-6 rounded-lg transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-green-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                                on:click=handle_enroll
-                                disabled=move || is_enrolling.get()
-                            >
-                                "🚀 开始抢课"
-                            </button>
-                            <button
-                                class="bg-red-500/80 hover:bg-red-600/80 text-white font-medium py-3 px-6 rounded-lg transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-red-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                                on:click=handle_stop_enroll
-                                disabled=move || !is_enrolling.get()
-                            >
-                                "⏹️ 停止抢课"
-                            </button>
+                                >
+                                    <div class="log-line log-empty">"尚未开始 — 点击“开始抢课”后，这里会实时显示每门课程的选课状态。"</div>
+                                </Show>
+                            </div>
                         </div>
 
                         // 课程列表
-                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
-                            <div class="bg-black/30 backdrop-blur-sm rounded-xl p-4 border border-white/20">
-                                <div class="flex items-center gap-2 mb-3">
-                                    <div class="w-3 h-3 bg-green-400 rounded-full"></div>
-                                    <h3 class="text-lg font-bold text-white">"已选课程"</h3>
-                                    <span class="text-white/70 text-sm">
-                                        {move || format!("共 {} 门", app_state.get().selected_courses.get().len())}
-                                    </span>
+                        <div class="course-grid">
+                            <div class="card course-card">
+                                <div class="course-card__head">
+                                    <span class="dot dot--green"></span>
+                                    <h4>"已选课程"</h4>
+                                    <span class="badge">{move || app_state.get().selected_courses.get().len()}</span>
                                 </div>
-                                <div class="space-y-2 max-h-40 overflow-y-auto">
-                                    <For
-                                        each=move || app_state.get().selected_courses.get()
-                                        key=|course| course.JXBID.clone()
-                                        children=move |course| {
-                                            view! {
-                                                <div class="p-3 bg-green-500/20 border border-green-400/30 rounded-lg">
-                                                    <div class="font-medium text-white text-sm">{course.KCM}</div>
-                                                    <div class="text-xs text-white/70 mt-1">
-                                                        {format!("教师: {} | ID: {}", course.SKJS, course.JXBID)}
-                                                    </div>
-                                                </div>
-                                            }
-                                        }
-                                    />
-                                </div>
+                                <Show
+                                    when=move || app_state.get().selected_courses.get().is_empty()
+                                    fallback=move || view! {
+                                        <ul class="course-list">
+                                            <For
+                                                each=move || app_state.get().selected_courses.get()
+                                                key=|course| course.JXBID.clone()
+                                                children=move |course| {
+                                                    view! {
+                                                        <li class="course-row">
+                                                            <span class="course-row__pip pip--green"></span>
+                                                            <div class="course-row__body">
+                                                                <div class="course-row__name">{course.KCM}</div>
+                                                                <div class="course-row__meta">
+                                                                    {format!("教师: {} | ID: ", course.SKJS)}
+                                                                    <span class="mono">{course.JXBID}</span>
+                                                                </div>
+                                                            </div>
+                                                        </li>
+                                                    }
+                                                }
+                                            />
+                                        </ul>
+                                    }
+                                >
+                                    <div class="course-empty">"暂无已选课程"</div>
+                                </Show>
                             </div>
 
-                            <div class="bg-black/30 backdrop-blur-sm rounded-xl p-4 border border-white/20">
-                                <div class="flex items-center gap-2 mb-3">
-                                    <div class="w-3 h-3 bg-blue-400 rounded-full"></div>
-                                    <h3 class="text-lg font-bold text-white">"待选课程（即收藏课程）"</h3>
-                                    <span class="text-white/70 text-sm">
-                                        {move || format!("共 {} 门", app_state.get().favorite_courses.get().len())}
-                                    </span>
+                            <div class="card course-card">
+                                <div class="course-card__head">
+                                    <span class="dot dot--blue"></span>
+                                    <h4>"待选课程（即收藏课程）"</h4>
+                                    <span class="badge">{move || app_state.get().favorite_courses.get().len()}</span>
                                 </div>
-                                <div class="space-y-2 max-h-40 overflow-y-auto">
-                                    <For
-                                        each=move || app_state.get().favorite_courses.get()
-                                        key=|course| course.JXBID.clone()
-                                        children=move |course| {
-                                            view! {
-                                                <div class="p-3 bg-blue-500/20 border border-blue-400/30 rounded-lg">
-                                                    <div class="flex items-center justify-between">
-                                                        <div class="flex-1">
-                                                            <div class="font-medium text-white text-sm">{course.KCM}</div>
-                                                            <div class="text-xs text-white/70 mt-1">
-                                                                {format!("教师: {} | ID: {}", course.SKJS, course.JXBID)}
+                                <Show
+                                    when=move || app_state.get().favorite_courses.get().is_empty()
+                                    fallback=move || view! {
+                                        <ul class="course-list">
+                                            <For
+                                                each=move || app_state.get().favorite_courses.get()
+                                                key=|course| course.JXBID.clone()
+                                                children=move |course| {
+                                                    view! {
+                                                        <li class="course-row">
+                                                            <span class="course-row__pip pip--blue"></span>
+                                                            <div class="course-row__body">
+                                                                <div class="course-row__name">{course.KCM}</div>
+                                                                <div class="course-row__meta">
+                                                                    {format!("教师: {} | ID: ", course.SKJS)}
+                                                                    <span class="mono">{course.JXBID}</span>
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            }
-                                        }
-                                    />
-                                </div>
+                                                        </li>
+                                                    }
+                                                }
+                                            />
+                                        </ul>
+                                    }
+                                >
+                                    <div class="course-empty">"暂无收藏课程，请先到选课网站收藏想抢的课程"</div>
+                                </Show>
                             </div>
                         </div>
                     </div>
                 </div>
-
-                // Toast Container
-                <ToastContainer />
             </div>
-        }
+
+            <ToastContainer />
+        </div>
+    }
 }
