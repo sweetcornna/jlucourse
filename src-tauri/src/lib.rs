@@ -7,7 +7,11 @@ use tauri::Manager;
 /// 复用同一 token = 同一会话 = 同一设备，不会触发二次登录、不会把自己挤下线。
 /// 同步命令：Tauri 在主线程执行，满足 macOS 等平台「窗口必须在主线程创建」。
 #[tauri::command]
-fn open_official_fallback(app: tauri::AppHandle, token: String) -> Result<(), String> {
+fn open_official_fallback(
+    app: tauri::AppHandle,
+    token: String,
+    batch: Option<String>,
+) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     // 已打开则聚焦，避免重复建窗。
@@ -18,9 +22,19 @@ fn open_official_fallback(app: tauri::AppHandle, token: String) -> Result<(), St
 
     let url = tauri::Url::parse("https://icourses.jlu.edu.cn/xsxk/profile/index.html")
         .map_err(|e| e.to_string())?;
-    // serde_json 序列化保证 token 作为 JS 字符串字面量安全嵌入（防注入）。
+    // serde_json 序列化保证值作为 JS 字符串字面量安全嵌入（防注入）。
+    // 官网 index.min.js 初始化时读取 sessionStorage['token'] 判断是否已登录，
+    // 用 currentBatch 记住批次；再种一个 Authorization cookie 作为兜底。
     let token_js = serde_json::to_string(&token).map_err(|e| e.to_string())?;
-    let script = format!("try{{window.sessionStorage.setItem('token', {token_js});}}catch(e){{}}");
+    let batch_js = serde_json::to_string(&batch.unwrap_or_default()).map_err(|e| e.to_string())?;
+    let script = format!(
+        "try{{\
+           var t={token_js};var b={batch_js};\
+           sessionStorage.setItem('token',t);\
+           if(b){{sessionStorage.setItem('currentBatch',b);}}\
+           document.cookie='Authorization='+t+';path=/';\
+         }}catch(e){{}}"
+    );
 
     WebviewWindowBuilder::new(&app, "official", WebviewUrl::External(url))
         .title("吉林大学选课 · 官方网站（兜底）")

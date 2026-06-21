@@ -571,15 +571,17 @@ fn manual_select_once(course: CourseInfo, app_state: AppState) {
 }
 
 // 通过全局 __TAURI__（withGlobalTauri=true）调用自定义命令；非 Tauri 环境返回 false。
+// 兼容多种 invoke 暴露形态（core.invoke / invoke / tauri.invoke）以防版本差异。
 #[wasm_bindgen(inline_js = r#"
 export function __funky_tauri_invoke(cmd, payload) {
   try {
     const t = window.__TAURI__;
-    if (t && t.core && typeof t.core.invoke === 'function') {
-      t.core.invoke(cmd, payload);
+    const invoke = t && ((t.core && t.core.invoke) || t.invoke || (t.tauri && t.tauri.invoke));
+    if (typeof invoke === 'function') {
+      Promise.resolve(invoke(cmd, payload)).catch(function (e) { console.error('open_official_fallback invoke failed:', e); });
       return true;
     }
-  } catch (e) {}
+  } catch (e) { console.error(e); }
   return false;
 }
 "#)]
@@ -588,24 +590,30 @@ extern "C" {
 }
 
 // 兜底（A）：打开官方选课网站。
-// 桌面端（Tauri）→ 内嵌 webview，并把当前 token 注入官网 sessionStorage（同一会话/同一设备）。
+// 桌面端（Tauri）→ 内嵌 webview，并把当前 token / 批次注入官网 sessionStorage（同一会话/同一设备）。
 // 非桌面端（Web / Android 无原生子窗口）→ 退化为系统浏览器打开（需自行登录）。
 fn open_official_fallback(app_state: AppState) {
     let Some(token) = app_state.token.get() else {
         toast_error("请先登录后再使用兜底");
         return;
     };
+    let batch = app_state.batch_id.get().unwrap_or_default();
     let payload = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &payload,
         &JsValue::from_str("token"),
         &JsValue::from_str(&token),
     );
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("batch"),
+        &JsValue::from_str(&batch),
+    );
     if __funky_tauri_invoke("open_official_fallback", payload.into()) {
-        toast_info("正在打开官方选课网站（已带入登录态）");
+        toast_info("已在内嵌窗口打开官方选课网站（已带入登录态）");
     } else {
         match open_external_browser("https://icourses.jlu.edu.cn/xsxk/profile/index.html") {
-            Ok(()) => toast_warning("已用系统浏览器打开官方网站；非桌面端需自行登录"),
+            Ok(()) => toast_warning("未检测到桌面环境：已用系统浏览器打开（需自行登录）"),
             Err(_) => toast_error("无法打开官方网站"),
         }
     }
