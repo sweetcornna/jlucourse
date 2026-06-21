@@ -441,17 +441,11 @@ pub fn stop_enrollment(app_state: &AppState) {
 }
 
 // Utility functions
-async fn set_timeout(ms: i32) {
-    use wasm_bindgen_futures::JsFuture;
-    let promise = js_sys::Promise::new(
-        &mut (|resolve, _| {
-            web_sys::window()
-                .unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
-                .unwrap();
-        }),
-    );
-    JsFuture::from(promise).await.unwrap();
+// 使用 gloo-timers 的 TimeoutFuture，避免手写 setTimeout/Promise 时的三处 unwrap
+// （window() / set_timeout / Promise 拒绝任一失败都会 panic 掉整个 WASM 模块，
+//   而该延时在 12 路抢课循环里每 200ms 调用一次，panic 会让全部线程与 UI 同时死掉）。
+async fn set_timeout(ms: u32) {
+    gloo_timers::future::TimeoutFuture::new(ms).await;
 }
 
 #[component]
