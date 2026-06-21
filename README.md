@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <p align="center">
-  <img style="height:200px;width:200px" src="./.github/assets/Irena720.png" alt="jlucourse" />
+  <img style="height:180px;width:180px" src="./.github/assets/logo.png" alt="jlucourse" />
 </p>
 
 <div align="center">
