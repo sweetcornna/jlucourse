@@ -597,17 +597,11 @@ fn open_official_fallback(app_state: AppState) {
         toast_error("请先登录后再使用兜底");
         return;
     };
-    let batch = app_state.batch_id.get().unwrap_or_default();
     let payload = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &payload,
         &JsValue::from_str("token"),
         &JsValue::from_str(&token),
-    );
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("batch"),
-        &JsValue::from_str(&batch),
     );
     if __funky_tauri_invoke("open_official_fallback", payload.into()) {
         toast_info("已在内嵌窗口打开官方选课网站（已带入登录态）");
