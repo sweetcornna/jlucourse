@@ -129,6 +129,10 @@ pub struct AppState {
     pub favorite_courses: RwSignal<Vec<CourseInfo>>,
     pub enrollment_status: RwSignal<EnrollmentStatus>,
     pub should_continue: RwSignal<bool>,
+    // 单调递增的运行代号：每次开始抢课 +1。worker 捕获开始时的代号，
+    // 一旦发现代号变了（用户停止后又重新开始）便自行退出，避免上一轮的残留
+    // worker 复用共享信号、干扰新一轮的运行状态。
+    pub run_epoch: Arc<AtomicUsize>,
 }
 
 impl AppState {
@@ -141,6 +145,7 @@ impl AppState {
             favorite_courses: RwSignal::new(Vec::new()),
             enrollment_status: RwSignal::new(EnrollmentStatus::default()),
             should_continue: RwSignal::new(false),
+            run_epoch: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -399,6 +404,11 @@ pub async fn enroll_courses(
     let cursor = Arc::new(AtomicUsize::new(0));
     // active 计数在所有 worker 退出后把 is_running 复位（修复 UI 卡在“运行中”）。
     let active = Arc::new(AtomicUsize::new(ENROLL_WORKERS));
+    // 本轮运行代号：用于让“停止后立刻重新开始”时，上一轮的残留 worker 自行退出。
+    let epoch = app_state
+        .run_epoch
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
 
     for _ in 0..ENROLL_WORKERS {
         let token = token.clone();
@@ -410,7 +420,10 @@ pub async fn enroll_courses(
         let active = active.clone();
 
         spawn_local(async move {
-            while app_state.should_continue.get() {
+            // 仅当用户未停止且仍是本轮（代号未被新一轮覆盖）时继续。
+            while app_state.should_continue.get()
+                && app_state.run_epoch.load(Ordering::Acquire) == epoch
+            {
                 // 领取下一门未完成课程；全部完成则退出。
                 let snapshot: Vec<bool> = done.iter().map(|b| b.load(Ordering::Acquire)).collect();
                 let start = cursor.fetch_add(1, Ordering::Relaxed);
@@ -445,21 +458,28 @@ pub async fn enroll_courses(
                     }
                 };
 
-                app_state.enrollment_status.update(|s| {
-                    if let Some(slot) = s.course_statuses.get_mut(idx) {
-                        *slot = format!("[{}]{}", course.KCM, label);
-                    }
-                });
-
-                // 普通终态只标记本课程完成；致命错误（如未登录）停止全部课程。
+                // 先标记终态，再决定是否写状态：N 个 worker 并发抢同一门课时，
+                // 若该课已被某个 worker 的终态结果敲定（done=true），慢到的非终态
+                // 重复请求就不应把“选课成功”覆盖回“等待中”。
                 if stop_self {
                     done[idx].store(true, Ordering::Release);
                 }
+                if stop_self || !done[idx].load(Ordering::Acquire) {
+                    app_state.enrollment_status.update(|s| {
+                        if let Some(slot) = s.course_statuses.get_mut(idx) {
+                            *slot = format!("[{}]{}", course.KCM, label);
+                        }
+                    });
+                }
+
+                // 致命错误（如未登录）停止全部课程。
                 if fatal {
                     app_state.should_continue.set(false);
                 }
-                // 用户已停止则立即退出，不必再等待 200ms（缩短停止后的清空窗口）。
-                if !app_state.should_continue.get() {
+                // 用户已停止、或已开启新一轮，则立即退出，不必再等待 200ms。
+                if !app_state.should_continue.get()
+                    || app_state.run_epoch.load(Ordering::Acquire) != epoch
+                {
                     break;
                 }
 
@@ -467,8 +487,11 @@ pub async fn enroll_courses(
                 set_timeout(200).await;
             }
 
-            // 本 worker 退出：最后一个退出者把运行状态复位。
-            if active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            // 本 worker 退出：最后一个退出者复位运行状态——但仅当仍是本轮，
+            // 以免上一轮的残留 worker 把新一轮的运行状态误关掉。
+            if active.fetch_sub(1, Ordering::AcqRel) == 1
+                && app_state.run_epoch.load(Ordering::Acquire) == epoch
+            {
                 app_state.enrollment_status.update(|status| {
                     status.is_running = false;
                 });
