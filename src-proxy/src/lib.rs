@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 #[actix_web::main]
 pub async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("debug"));
+    // 默认 info：debug 级别会打印含密码/令牌的请求体与响应，需显式 RUST_LOG=debug 才开启
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
     info!("Starting universal proxy server at http://127.0.0.1:3030");
 
@@ -65,6 +66,15 @@ struct ProxyRequest {
     uuid: Option<String>,
 }
 
+/// SSRF 白名单：仅允许把请求转发到 https 协议、主机为 icourses.jlu.edu.cn 的上游。
+/// CORS 拦不住这条路径（curl/原生客户端不受 CORS 约束），必须在服务端校验。
+fn is_allowed_upstream(url: &str) -> bool {
+    match reqwest::Url::parse(url) {
+        Ok(u) => u.scheme() == "https" && u.host_str() == Some("icourses.jlu.edu.cn"),
+        Err(_) => false,
+    }
+}
+
 async fn proxy_handler_get(req: HttpRequest, path: web::Path<String>) -> HttpResponse {
     let endpoint = path.into_inner();
     let params = req.query_string();
@@ -104,7 +114,16 @@ async fn proxy_handler_get(req: HttpRequest, path: web::Path<String>) -> HttpRes
 
     let mut headers = HeaderMap::new();
     if let Some(token) = auth_token {
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&token).unwrap());
+        match HeaderValue::from_str(&token) {
+            Ok(v) => {
+                headers.insert(AUTHORIZATION, v);
+            }
+            Err(e) => {
+                error!("Invalid authorization header value: {e}");
+                return HttpResponse::BadRequest()
+                    .json(json!({ "error": "Invalid authorization header" }));
+            }
+        }
     }
 
     debug!("Sending GET request to: {original_url}");
@@ -140,8 +159,18 @@ async fn proxy_handler(
 ) -> HttpResponse {
     let endpoint = path.into_inner();
     debug!("Handling proxy request for endpoint: {endpoint}");
-    debug!("Request body: {body:?}");
 
+    // SSRF 防护：只允许转发到吉大选课服务器。合法前端只请求 icourses.jlu.edu.cn，
+    // 这里拒绝任何其它目标，避免本地代理被当作任意 URL 的开放转发器。
+    if !is_allowed_upstream(&body.original_url) {
+        warn!("Rejected non-allowlisted upstream URL");
+        return HttpResponse::Forbidden().json(json!({ "error": "upstream host not allowed" }));
+    }
+
+    // 说明：服务器证书本身有效（DigiCert，*.jlu.edu.cn），但只下发叶子证书、
+    // 不附带 RapidSSL 中间证书；rustls 不会自动补链（webpki 根 + 无 AIA），
+    // 直接关闭此项会导致证书校验失败、登录中断。移除需配合“固定中间证书为
+    // 附加根”或平台校验器，并对真机做联调验证（见优化报告后续建议）。
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()
@@ -196,7 +225,16 @@ async fn proxy_handler(
     // headers.insert("host", HeaderValue::from_str("icourses.jlu.edu.cn").unwrap());
 
     if let Some(token) = auth_token {
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&token).unwrap());
+        match HeaderValue::from_str(&token) {
+            Ok(v) => {
+                headers.insert(AUTHORIZATION, v);
+            }
+            Err(e) => {
+                error!("Invalid authorization header value: {e}");
+                return HttpResponse::BadRequest()
+                    .json(json!({ "error": "Invalid authorization header" }));
+            }
+        }
     }
     if keep_alive {
         headers.insert("Connection", HeaderValue::from_str("keep-alive").unwrap());
@@ -210,13 +248,14 @@ async fn proxy_handler(
     if body.original_url.contains("xsxk/sc/clazz/list")
         && let Some(batch_id) = batch_id
     {
-        headers.insert(
-            "Referer",
-            HeaderValue::from_str(&format!(
-                "https://icourses.jlu.edu.cn/xsxk/profile/index.html?batchId={batch_id}"
-            ))
-            .unwrap(),
-        );
+        let referer =
+            format!("https://icourses.jlu.edu.cn/xsxk/profile/index.html?batchId={batch_id}");
+        match HeaderValue::from_str(&referer) {
+            Ok(v) => {
+                headers.insert("Referer", v);
+            }
+            Err(e) => warn!("Skipping invalid Referer header: {e}"),
+        }
     }
 
     // 构建请求体
@@ -258,19 +297,26 @@ async fn proxy_handler(
     }
 
     debug!("Sending request to: {}", body.original_url);
-    debug!("Headers: {headers:?}");
     debug!("Query params: {query_params:?}");
-    debug!("Request body: {request_body:?}");
+    // 不记录 headers（含 Authorization）与 request_body（含登录密码），避免凭据落入日志
 
     let mut request = client.post(&body.original_url).headers(headers);
 
     // 添加请求体或查询参数
     if !request_body.is_empty() {
-        // 应当以urlencoded形式发送
-        let request_body = serde_urlencoded::to_string(&request_body).unwrap_or_default();
-        request = request
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(request_body);
+        // 应当以 urlencoded 形式发送
+        match serde_urlencoded::to_string(&request_body) {
+            Ok(encoded) => {
+                request = request
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(encoded);
+            }
+            Err(e) => {
+                error!("Failed to encode request body: {e}");
+                return HttpResponse::InternalServerError()
+                    .json(json!({ "error": "Failed to encode request body" }));
+            }
+        }
     }
     if !query_params.is_empty() {
         request = request.query(&query_params);
@@ -283,7 +329,8 @@ async fn proxy_handler(
 
             match response.text().await {
                 Ok(text) => {
-                    debug!("Response text: {text}");
+                    // 不记录响应正文（登录响应含会话 token）
+                    debug!("Received {} bytes from upstream", text.len());
                     match serde_json::from_str::<serde_json::Value>(&text) {
                         Ok(json_value) => HttpResponse::Ok()
                             .content_type("application/json")
@@ -308,5 +355,33 @@ async fn proxy_handler(
                 "error": format!("Request failed: {}", e)
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_allowed_upstream;
+
+    #[test]
+    fn allows_only_https_jlu_host() {
+        // 合法目标
+        assert!(is_allowed_upstream(
+            "https://icourses.jlu.edu.cn/xsxk/elective/clazz/add"
+        ));
+        assert!(is_allowed_upstream(
+            "https://icourses.jlu.edu.cn/xsxk/auth/login"
+        ));
+
+        // 非法目标
+        assert!(!is_allowed_upstream("http://icourses.jlu.edu.cn/x")); // 非 https
+        assert!(!is_allowed_upstream("https://evil.com/")); // 其它主机
+        assert!(!is_allowed_upstream(
+            "https://icourses.jlu.edu.cn.evil.com/"
+        )); // 后缀伪装
+        assert!(!is_allowed_upstream(
+            "https://user@icourses.jlu.edu.cn.evil.com/"
+        )); // userinfo 伪装
+        assert!(!is_allowed_upstream("file:///etc/passwd"));
+        assert!(!is_allowed_upstream("not a url"));
     }
 }
