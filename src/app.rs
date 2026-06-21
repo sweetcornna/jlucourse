@@ -262,7 +262,10 @@ pub async fn login(
         app_state.batch_list.set(batch_list);
         Ok(())
     } else {
-        Err(ErrorKind::ParseError(login_resp["msg"].to_string()).into())
+        Err(
+            ErrorKind::ParseError(login_resp["msg"].as_str().unwrap_or("登录失败").to_string())
+                .into(),
+        )
     }
 }
 
@@ -309,14 +312,26 @@ pub async fn get_courses(app_state: &AppState) -> Result<()> {
     let selected_courses: Vec<CourseInfo> = if selected["code"] == 200 {
         serde_json::from_value(selected["data"].clone())?
     } else {
-        return Err(ErrorKind::CourseError(selected["msg"].to_string()).into());
+        return Err(ErrorKind::CourseError(
+            selected["msg"]
+                .as_str()
+                .unwrap_or("获取已选课程失败")
+                .to_string(),
+        )
+        .into());
     };
 
     let favorite = gloo::get_favorite_courses_proxy(&token, &batch_id).await?;
     let favorite_courses: Vec<CourseInfo> = if favorite["code"] == 200 {
         serde_json::from_value(favorite["data"].clone())?
     } else {
-        return Err(ErrorKind::CourseError(favorite["msg"].to_string()).into());
+        return Err(ErrorKind::CourseError(
+            favorite["msg"]
+                .as_str()
+                .unwrap_or("获取收藏课程失败")
+                .to_string(),
+        )
+        .into());
     };
 
     app_state.selected_courses.set(selected_courses);
@@ -511,6 +526,48 @@ pub fn stop_enrollment(app_state: &AppState) {
     });
 }
 
+// 手动「选一次」：用 app 现有登录态对单门课打一发选课请求，作为自动脚本的兜底（B）。
+// 复用同一 token/批次，不新开会话，桌面 / Web / Android 都可用。
+fn manual_select_once(course: CourseInfo, app_state: AppState) {
+    spawn_local(async move {
+        let Some(token) = app_state.token.get() else {
+            toast_error("未登录，请先登录");
+            return;
+        };
+        let Some(batch_id) = app_state.batch_id.get() else {
+            toast_error("请先选择批次");
+            return;
+        };
+        match gloo::select_course_proxy(
+            &token,
+            &batch_id,
+            &course.teaching_class_type.clone().unwrap_or_default(),
+            &course.JXBID,
+            &course.secret_val.clone().unwrap_or_default(),
+        )
+        .await
+        {
+            Ok(json) => {
+                let code = json["code"].as_i64().unwrap_or(0);
+                let msg = json["msg"].as_str().unwrap_or("");
+                let decision = classify_enroll(code, msg, true);
+                let text = format!("[{}]{}", course.KCM, decision.label);
+                if decision.fatal {
+                    toast_error(text);
+                } else if decision.stop_self {
+                    toast_success(text);
+                } else {
+                    toast_info(text);
+                }
+            }
+            Err(e) => {
+                log::error!("手动选课请求错误: {e:?}");
+                toast_error(format!("[{}]请求错误", course.KCM));
+            }
+        }
+    });
+}
+
 // Utility functions
 // 使用 gloo-timers 的 TimeoutFuture，避免手写 setTimeout/Promise 时的三处 unwrap
 // （window() / set_timeout / Promise 拒绝任一失败都会 panic 掉整个 WASM 模块，
@@ -636,6 +693,8 @@ pub fn App() -> impl IntoView {
                         let error_msg = format!("登录失败：{e:?}");
                         set_status_message.set(error_msg.clone());
                         toast_error(error_msg);
+                        // 登录失败：刷新验证码图并清空输入框（旧验证码对新图无效）
+                        set_captcha.set(String::new());
                         handle_get_captcha(());
                     }
                 }
@@ -870,7 +929,7 @@ pub fn App() -> impl IntoView {
                             </span>
                             <div class="control-actions">
                                 <button
-                                    class="btn btn--success"
+                                    class="btn btn--primary"
                                     type="button"
                                     on:click=handle_enroll
                                     disabled=move || is_enrolling.get()
@@ -962,6 +1021,17 @@ pub fn App() -> impl IntoView {
                                     <span class="dot dot--blue"></span>
                                     <h4>"待选课程（即收藏课程）"</h4>
                                     <span class="badge">{move || app_state.get().favorite_courses.get().len()}</span>
+                                    <button
+                                        class="btn btn--ghost btn--sm"
+                                        type="button"
+                                        title="对所有收藏课程各手动选一次（脚本兜底）"
+                                        on:click=move |_| {
+                                            let st = app_state.get();
+                                            for course in st.favorite_courses.get() {
+                                                manual_select_once(course, st.clone());
+                                            }
+                                        }
+                                    >"全部各选一次"</button>
                                 </div>
                                 <Show
                                     when=move || app_state.get().favorite_courses.get().is_empty()
@@ -971,6 +1041,7 @@ pub fn App() -> impl IntoView {
                                                 each=move || app_state.get().favorite_courses.get()
                                                 key=|course| course.JXBID.clone()
                                                 children=move |course| {
+                                                    let c = course.clone();
                                                     view! {
                                                         <li class="course-row">
                                                             <span class="course-row__pip pip--blue"></span>
@@ -981,6 +1052,12 @@ pub fn App() -> impl IntoView {
                                                                     <span class="mono">{course.JXBID}</span>
                                                                 </div>
                                                             </div>
+                                                            <button
+                                                                class="btn btn--ghost btn--sm"
+                                                                type="button"
+                                                                title="用当前登录态手动选一次（脚本兜底）"
+                                                                on:click=move |_| manual_select_once(c.clone(), app_state.get())
+                                                            >"选一次"</button>
                                                         </li>
                                                     }
                                                 }
