@@ -1,3 +1,4 @@
+use crate::external_browser::open_external_browser;
 use crate::external_link::ExternalLink;
 use funky_lesson_core::{
     client::gloo,
@@ -10,6 +11,7 @@ use leptos::task::spawn_local;
 use leptos::*;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use wasm_bindgen::prelude::*;
 
 // Toast types
 #[derive(Clone, PartialEq)]
@@ -568,6 +570,47 @@ fn manual_select_once(course: CourseInfo, app_state: AppState) {
     });
 }
 
+// 通过全局 __TAURI__（withGlobalTauri=true）调用自定义命令；非 Tauri 环境返回 false。
+#[wasm_bindgen(inline_js = r#"
+export function __funky_tauri_invoke(cmd, payload) {
+  try {
+    const t = window.__TAURI__;
+    if (t && t.core && typeof t.core.invoke === 'function') {
+      t.core.invoke(cmd, payload);
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+"#)]
+extern "C" {
+    fn __funky_tauri_invoke(cmd: &str, payload: JsValue) -> bool;
+}
+
+// 兜底（A）：打开官方选课网站。
+// 桌面端（Tauri）→ 内嵌 webview，并把当前 token 注入官网 sessionStorage（同一会话/同一设备）。
+// 非桌面端（Web / Android 无原生子窗口）→ 退化为系统浏览器打开（需自行登录）。
+fn open_official_fallback(app_state: AppState) {
+    let Some(token) = app_state.token.get() else {
+        toast_error("请先登录后再使用兜底");
+        return;
+    };
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("token"),
+        &JsValue::from_str(&token),
+    );
+    if __funky_tauri_invoke("open_official_fallback", payload.into()) {
+        toast_info("正在打开官方选课网站（已带入登录态）");
+    } else {
+        match open_external_browser("https://icourses.jlu.edu.cn/xsxk/profile/index.html") {
+            Ok(()) => toast_warning("已用系统浏览器打开官方网站；非桌面端需自行登录"),
+            Err(_) => toast_error("无法打开官方网站"),
+        }
+    }
+}
+
 // Utility functions
 // 使用 gloo-timers 的 TimeoutFuture，避免手写 setTimeout/Promise 时的三处 unwrap
 // （window() / set_timeout / Promise 拒绝任一失败都会 panic 掉整个 WASM 模块，
@@ -947,6 +990,17 @@ pub fn App() -> impl IntoView {
                                     "停止抢课"
                                 </button>
                             </div>
+                        </div>
+
+                        // 脚本兜底入口（A）：打开内嵌官方选课网站，带入登录态
+                        <div class="fallback">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                            <span class="fallback__grow">"脚本抢不到？打开官方选课页手动兜底，登录态自动带入。"</span>
+                            <button
+                                class="btn btn--ghost btn--sm"
+                                type="button"
+                                on:click=move |_| open_official_fallback(app_state.get())
+                            >"官方选课网站"</button>
                         </div>
 
                         // 实时状态日志
