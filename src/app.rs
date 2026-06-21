@@ -429,6 +429,10 @@ pub async fn enroll_courses(
                 if stop_self || fatal {
                     break;
                 }
+                // 用户已停止则立即退出，不必再等待 200ms（缩短停止后的清空窗口）
+                if !app_state.should_continue.get() {
+                    break;
+                }
 
                 // 短暂延迟避免请求过快
                 set_timeout(200).await;
@@ -476,7 +480,7 @@ pub fn App() -> impl IntoView {
     let (step, set_step) = signal(1);
     // 抢课中状态由真实的 enrollment_status.is_running 派生，避免出现“UI 显示运行中
     // 但任务其实早已结束”的不一致（所有任务退出后 is_running 会被复位）。
-    let is_enrolling = Memo::new(move |_| app_state.get().enrollment_status.get().is_running);
+    let is_enrolling = Memo::new(move |_| app_state.get().enrollment_status.with(|s| s.is_running));
 
     // Back button handler
     let handle_back = move |_| {
